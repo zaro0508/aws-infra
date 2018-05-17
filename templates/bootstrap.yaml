@@ -21,7 +21,30 @@ Resources:
     Type: 'AWS::IAM::Group'
     Properties:
       ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/job-function/ViewOnlyAccess
+  AWSIAMCfDeployerRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              AWS:
+                - !GetAtt AWSIAMTravisUser.Arn
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AdministratorAccess
+  AWSIAMCfDeployerProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Path: "/"
+      Roles:
+        -
+          !Ref "AWSIAMCfDeployerRole"
   # Cloudformation bucket for CF templates
   AWSS3CloudformationBucket:
     Type: "AWS::S3::Bucket"
