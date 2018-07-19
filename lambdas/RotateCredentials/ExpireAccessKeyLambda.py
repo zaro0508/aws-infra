@@ -32,6 +32,13 @@ def lambda_handler(event, context):
     except (KeyError, ValueError, Exception) as e:
         logger.error(e.response['Error']['Message'])
 
+    # notification messages 
+    user_message_deactivated_key = '\n\tYour access key {} has been deactivated, please rotate your key.'
+    user_message_expired_key = '\n\tYour access key {} has expired, please rotate your key.'
+    user_message_expiring_key = '\n\tYour access key {} will expire in {} days, please rotate your key.'
+    report_message_deactivated_key = '\n\tAccess key {} for user {} has been deactivated.'
+    report_message_expired_key = '\n\tAccess key {} for user {} has expired.'
+
     max_age = get_max_password_age()  # password expiration setting
     credential_report = get_credential_report()
 
@@ -51,7 +58,7 @@ def lambda_handler(event, context):
             # IAM client will fail if root user contains active keys because list_access_keys
             # method will fail for root username '<root_account>'
             response = iam_client.list_access_keys(UserName=row['user'])
-            logger.debug("list_access_key response: " + json.dumps(response, default = myconverter))
+            logger.debug("list_access_key response: " + json.dumps(response, default = obj_converter))
             for key in response['AccessKeyMetadata'] :
                 logger.debug('processing access key: ' + key['AccessKeyId'])
                 if key['Status'] == "Inactive" : continue
@@ -64,45 +71,39 @@ def lambda_handler(event, context):
                         disable_key(key['AccessKeyId'], row['user'])
                         logger.debug('deactivated access key {}:{}:{}'.
                                      format(aws_account_identity, row['user'], key['AccessKeyId']))
-                        message = '\n\tYour access key {}:{} has been deactivated.' \
-                                    .format(aws_account_identity, key['AccessKeyId'])
-                        user_notice = user_notice + message
-                        report = report + message
+                        user_notice = user_notice + user_message_deactivated_key.format(key['AccessKeyId'])
+                        report = report + report_message_deactivated_key.format(key['AccessKeyId'], row['user'])
 
                     else:
-                        logger.debug('warn about expired access key {}:{}:{}'.
+                        logger.debug('expired access key {}:{}:{}'.
                                      format(aws_account_identity, row['user'], key['AccessKeyId']))
-                        message = '\n\tYour access key {}:{} has expired.' \
-                                    .format(aws_account_identity, key['AccessKeyId'])
-                        user_notice = user_notice + message
-                        report = report + message
+                        user_notice = user_notice + user_message_expired_key.format(key['AccessKeyId'])
+                        report = report + report_message_expired_key.format(key['AccessKeyId'], row['user'])
 
                 elif days_till_expire < GRACE_PERIOD:
-                    logger.debug('warn about expiring access key {}:{}:{}'.
+                    logger.debug('expiring access key {}:{}:{}'.
                                  format(aws_account_identity, row['user'], key['AccessKeyId']))
-                    user_notice = user_notice + \
-                                       ('\n\tYou must rotate your access key {}:{} in {} days.'
-                                        .format(aws_account_identity,
-                                                key['AccessKeyId'],
-                                                days_till_expire))
+                    user_notice = user_notice + user_message_expiring_key.format(key['AccessKeyId'],
+                                                                                 days_till_expire)
 
         except ClientError as e:
             logger.error(e.response['Error']['Message'])
 
         if user_notice != '' and SEND_EMAIL:     # email to iam users
             logger.debug("Emailing user " + row['user'])
-            subject = "Credential Expiration Notice From AWS Account: {}".format(aws_account_identity)
-            footer = '\n\tAWS account policy requires rotating keys every {} days.'.format(max_age)
+            subject = "Notification from AWS account {}".format(aws_account_identity)
+            footer = '\n\tAWS account policy requires rotating access keys every {} days.'.format(max_age)
             body = user_notice + footer
             email_user(SENDER_EMAIL, row['user'], subject, body)
 
     if report != '' and SEND_REPORT:      # send reports to an SNS topic
         logger.debug("Publishing report to " + REPORT_TOPIC_ARN)
         publish_sns_topic(REPORT_TOPIC_ARN,
-                          "Credential expiration notice from {}".format(aws_account_identity),
+                          "Notification from AWS account {}".format(aws_account_identity),
                           report)
 
-def myconverter(o):
+# format objects to strings (for debugging only)
+def obj_converter(o):
     if isinstance(o, datetime):
         return o.__str__()
 
@@ -120,8 +121,9 @@ def get_aws_account_identity():
     except ClientError as e:
         logger.error(e.response['Error']['Message'])
 
-    return account_identity
+    return str(account_identity)
 
+# publish notifications to an SNS topic
 def publish_sns_topic(topic_arn, subject, message):
     client = boto3.client('sns')
     try:
@@ -129,6 +131,7 @@ def publish_sns_topic(topic_arn, subject, message):
     except ClientError as e:
         logger.error(e.response['Error']['Message'])
 
+# Send notification to IAM users
 def email_user(sender, recipient, subject, body):
 
         client = boto3.client('ses')
@@ -202,7 +205,7 @@ def email_user(sender, recipient, subject, body):
             logger.info("Message ID: " + response['MessageId'])
 
 
-# Query the account's password policy for the password age. Return that number of days
+# Get the AWS account's setting for password age
 def get_max_password_age():
     iam_client = boto3.client('iam')
     try:
@@ -212,12 +215,11 @@ def get_max_password_age():
         logger.error(e.response['Error']['Message'])
 
 
-# Request the credential report, download and parse the CSV
-# Return a list of credentials
+# Get the AWS account's credential report (in CSV) and return a list of credentials info
 def get_credential_report():
 
-    # initial request to generate report will respond with status='STARTED'
-    # and may take a few seconds to 'COMPLETE'
+    # initial request to generate report will respond with status='STARTED' and may
+    # take a few seconds to finish, keep requesting until the status is 'COMPLETE'
     iam_client = boto3.client('iam')
     resp1 = iam_client.generate_credential_report()
 
@@ -259,6 +261,7 @@ def get_days_until_key_expires(last_changed, max_age):
     return expires.days
 
 
+# disable an access key
 def disable_key(AccessKeyId, UserName):
     iam_client = boto3.client('iam')
     try:
