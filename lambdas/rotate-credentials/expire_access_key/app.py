@@ -26,6 +26,7 @@
 from __future__ import print_function
 import logging
 import os
+import io
 import csv
 import json
 import re
@@ -246,7 +247,11 @@ def get_credential_report():
         try:
             response = iam_client.get_credential_report()
             credential_report_csv = response['Content']
-            reader = csv.DictReader(credential_report_csv.splitlines())
+            # Zipfile only opens file in binary mode, but csv only accepts
+            # text files, so we need to wrap this.
+            # See <https://stackoverflow.com/questions/5627954>.
+            textfile = io.TextIOWrapper(credential_report_csv.splitlines(), encoding='utf8')
+            reader = csv.DictReader(textfile)
             credential_report = []
             for row in reader:
                 credential_report.append(row)
